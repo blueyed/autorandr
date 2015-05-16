@@ -56,6 +56,7 @@ Usage: autorandr [options]
 --fingerprint           fingerprint your current hardware setup
 --config                dump your current xrandr setup
 --dry-run               don't change anything, only print the xrandr commands
+--debug                 enable verbose output
 
  To prevent a profile from being loaded, place a script call "block" in its
  directory. The script is evaluated before the screen setup is inspected, and
@@ -165,7 +166,11 @@ class XrandrOutput(object):
     EDID_UNAVAILABLE = "--CONNECTED-BUT-EDID-UNAVAILABLE-"
 
     def __repr__(self):
-        return "<%s%s %s>" % (self.output, (" %s..%s" % (self.edid[:5], self.edid[-5:])) if self.edid else "", " ".join(self.option_vector))
+        return "<%s%s %s>" % (self.output, self.short_edid, " ".join(self.option_vector))
+
+    @property
+    def short_edid(self):
+        return ("%s..%s" % (self.edid[:5], self.edid[-5:])) if self.edid else ""
 
     @property
     def options_with_defaults(self):
@@ -334,6 +339,22 @@ class XrandrOutput(object):
 
     def __eq__(self, other):
         return self.edid_equals(other) and self.output == other.output and self.options == other.options
+
+    def verbose_diff(self, other):
+        "Compare to another XrandrOutput and return a list of human readable differences"
+        diffs = []
+        if not self.edid_equals(other):
+            diffs.append("EDID `%s' differs from `%s'" % (self.short_edid, other.short_edid))
+        if self.output != other.output:
+            diffs.append("Output name `%s' differs from `%s'" % (self.output, other.output))
+        for name in set(chain.from_iterable((self.options.keys(), other.options.keys()))):
+            if name not in other.options:
+                diffs.append("Option --%s (= `%s') is unset in the new configuration" % (name, self.options[name]))
+            elif name not in self.options:
+                diffs.append("Option --%s (`%s' in the new configuration) is unset" % (name, other.options[name]))
+            elif self.options[name] != other.options[name]:
+                diffs.append("Option --%s (= `%s') is `%s' in the new configuration" % (name, self.options[name], other[name]))
+        return diffs
 
 def xrandr_version():
     "Return the version of XRandR that this system uses"
@@ -589,6 +610,20 @@ def generate_virtual_profile(configuration, modes, profile_name):
                 configuration[output].options["off"] = None
     return configuration
 
+def print_profile_differences(one, another):
+    "Print the differences between two profiles for debugging"
+    if one == another:
+        return
+    print("Differences between the two profiles:", file=sys.stderr)
+    for output in set(chain.from_iterable((one.keys(), another.keys()))):
+        if output not in one:
+            print("  Output `%s' is missing from the active configuration" % output, file=sys.stderr)
+        elif output not in another:
+            print("  Output `%s' is missing from the new configuration" % output, file=sys.stderr)
+        else:
+            for line in one[output].verbose_diff(another[output]):
+                print("  [Output %s] %s" % (output, line), file=sys.stderr)
+
 def exit_help():
     "Print help and exit"
     print(help_text)
@@ -604,7 +639,7 @@ def exec_scripts(profile_path, script_name):
 
 def main(argv):
     try:
-       options = dict(getopt.getopt(argv[1:], "s:l:d:cfh", [ "dry-run", "change", "default=", "save=", "load=", "force", "fingerprint", "config", "help" ])[0])
+       options = dict(getopt.getopt(argv[1:], "s:l:d:cfh", [ "dry-run", "change", "default=", "save=", "load=", "force", "fingerprint", "config", "debug", "help" ])[0])
     except getopt.GetoptError as e:
         print(str(e))
         options = { "--help": True }
@@ -695,6 +730,8 @@ def main(argv):
         if load_config == dict(config) and not "-f" in options and not "--force" in options:
             print("Config already loaded", file=sys.stderr)
             sys.exit(0)
+        if "--debug" in options:
+            print_profile_differences(dict(config), load_config)
         remove_irrelevant_outputs(config, load_config)
 
         try:
